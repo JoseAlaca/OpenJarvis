@@ -5,6 +5,7 @@ All Gmail API calls are mocked; no network access is required.
 
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 from typing import List
@@ -394,3 +395,162 @@ def test_sync_channel_none_when_no_system_label(
     docs = list(connector.sync())
     assert len(docs) == 1
     assert docs[0].channel is None
+
+
+# ---------------------------------------------------------------------------
+# HTML body stripping
+# ---------------------------------------------------------------------------
+
+
+def test_html_to_text_strips_basic_tags() -> None:
+    """_html_to_text() removes tags but preserves visible text content."""
+    from openjarvis.connectors.gmail import _html_to_text  # noqa: PLC0415
+
+    html = (
+        "<html><body><p>Hello <b>world</b>!</p>"
+        "<p>Second paragraph.</p></body></html>"
+    )
+    text = _html_to_text(html)
+    assert "Hello" in text
+    assert "world" in text
+    assert "Second paragraph" in text
+    assert "<" not in text and ">" not in text
+
+
+def test_html_to_text_drops_script_and_style() -> None:
+    """Content inside <script>/<style>/<head> is stripped, not rendered."""
+    from openjarvis.connectors.gmail import _html_to_text  # noqa: PLC0415
+
+    html = """
+    <html>
+      <head><style>.foo { color: red; }</style><title>Ignore me</title></head>
+      <body>
+        <script>alert('xss')</script>
+        <p>Visible content here.</p>
+      </body>
+    </html>
+    """
+    text = _html_to_text(html)
+    assert "Visible content here" in text
+    assert "color: red" not in text
+    assert "alert" not in text
+    assert "Ignore me" not in text
+
+
+def test_html_to_text_decodes_entities() -> None:
+    """Named and numeric HTML entities are decoded to their characters."""
+    from openjarvis.connectors.gmail import _html_to_text  # noqa: PLC0415
+
+    html = "<p>Tom &amp; Jerry &mdash; 50&nbsp;cents</p>"
+    text = _html_to_text(html)
+    assert "Tom & Jerry" in text
+    assert "—" in text  # &mdash;
+    assert "50" in text and "cents" in text
+
+
+def test_html_to_text_inserts_paragraph_breaks() -> None:
+    """Block-level tags produce newlines so the chunker sees structure."""
+    from openjarvis.connectors.gmail import _html_to_text  # noqa: PLC0415
+
+    html = "<div>line one</div><div>line two</div><div>line three</div>"
+    text = _html_to_text(html)
+    # Each block produces at least one newline boundary.
+    assert text.count("\n") >= 2
+
+
+@patch("openjarvis.connectors.gmail._gmail_api_list_messages")
+@patch("openjarvis.connectors.gmail._gmail_api_get_message")
+def test_sync_strips_html_when_no_text_plain(
+    mock_get,
+    mock_list,
+    connector,
+    tmp_path: Path,
+) -> None:
+    """A multipart message with only text/html yields stripped plain text."""
+    creds_path = Path(connector._credentials_path)
+    creds_path.write_text(json.dumps({"token": "fake-access-token"}), encoding="utf-8")
+
+    html_bytes = (
+        b"<html><body><p>Hello <b>world</b>!</p>"
+        b"<p>Second paragraph.</p></body></html>"
+    )
+    html_b64 = base64.urlsafe_b64encode(html_bytes).decode().rstrip("=")
+
+    msg_html = {
+        "id": "msg-html-1",
+        "threadId": "thread-html-1",
+        "labelIds": ["INBOX"],
+        "payload": {
+            "mimeType": "multipart/alternative",
+            "headers": [
+                {"name": "From", "value": "marketer@example.com"},
+                {"name": "To", "value": "me@example.com"},
+                {"name": "Subject", "value": "Marketing"},
+                {"name": "Date", "value": "Mon, 01 Jan 2024 10:00:00 +0000"},
+            ],
+            "parts": [
+                # No text/plain alternative — only text/html.
+                {
+                    "mimeType": "text/html",
+                    "body": {"data": html_b64},
+                },
+            ],
+        },
+    }
+
+    mock_list.return_value = {"messages": [{"id": "msg-html-1"}]}
+    mock_get.return_value = msg_html
+
+    docs = list(connector.sync())
+    assert len(docs) == 1
+    content = docs[0].content
+    assert "Hello" in content
+    assert "world" in content
+    assert "Second paragraph" in content
+    assert "<" not in content and ">" not in content
+
+
+@patch("openjarvis.connectors.gmail._gmail_api_list_messages")
+@patch("openjarvis.connectors.gmail._gmail_api_get_message")
+def test_sync_prefers_text_plain_over_text_html(
+    mock_get,
+    mock_list,
+    connector,
+    tmp_path: Path,
+) -> None:
+    """When both alternatives are present, text/plain wins over text/html."""
+    creds_path = Path(connector._credentials_path)
+    creds_path.write_text(json.dumps({"token": "fake-access-token"}), encoding="utf-8")
+
+    plain_b64 = base64.urlsafe_b64encode(
+        b"Plain text version preferred."
+    ).decode().rstrip("=")
+    html_b64 = base64.urlsafe_b64encode(
+        b"<html><body><p>HTML version</p></body></html>"
+    ).decode().rstrip("=")
+
+    msg_alt = {
+        "id": "msg-alt-1",
+        "threadId": "thread-alt-1",
+        "labelIds": ["INBOX"],
+        "payload": {
+            "mimeType": "multipart/alternative",
+            "headers": [
+                {"name": "From", "value": "alice@example.com"},
+                {"name": "To", "value": "me@example.com"},
+                {"name": "Subject", "value": "Both alternatives"},
+                {"name": "Date", "value": "Mon, 01 Jan 2024 10:00:00 +0000"},
+            ],
+            "parts": [
+                {"mimeType": "text/plain", "body": {"data": plain_b64}},
+                {"mimeType": "text/html", "body": {"data": html_b64}},
+            ],
+        },
+    }
+
+    mock_list.return_value = {"messages": [{"id": "msg-alt-1"}]}
+    mock_get.return_value = msg_alt
+
+    docs = list(connector.sync())
+    assert len(docs) == 1
+    assert docs[0].content == "Plain text version preferred."

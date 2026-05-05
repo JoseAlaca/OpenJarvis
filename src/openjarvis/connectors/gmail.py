@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import base64
 import email.utils
+import re
 from datetime import datetime
-from typing import Any, Dict, Iterator, List, Optional
+from html.parser import HTMLParser
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import httpx
 
@@ -118,21 +120,86 @@ def _extract_header(headers: List[Dict[str, str]], name: str) -> str:
     return ""
 
 
+class _HTMLTextExtractor(HTMLParser):
+    """Strip HTML tags and return readable text using stdlib only.
+
+    Skips <script>, <style>, and <head> contents entirely so CSS rules and
+    JS payloads don't pollute the text. Inserts a newline at each block-level
+    tag boundary so the downstream chunker still has paragraph-ish breaks
+    to split on; without this, a single <div>-wrapped marketing email
+    becomes one giant unsplittable chunk.
+    """
+
+    _SKIP_TAGS = {"script", "style", "head", "title", "meta", "link"}
+    _BLOCK_TAGS = {
+        "p", "div", "br", "li", "ul", "ol", "tr", "td", "table",
+        "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "hr",
+        "article", "section", "header", "footer", "pre",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: List[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(
+        self, tag: str, attrs: List[Tuple[str, Optional[str]]]
+    ) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+        elif tag in self._BLOCK_TAGS and self._skip_depth == 0:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth == 0:
+            self._parts.append(data)
+
+    def get_text(self) -> str:
+        text = "".join(self._parts)
+        # Collapse runs of horizontal whitespace and excess blank lines so
+        # the chunker sees clean paragraphs rather than walls of \n.
+        text = re.sub(r"[ \t\r\f\v]+", " ", text)
+        text = re.sub(r"\n[ \t]*", "\n", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+
+def _html_to_text(html: str) -> str:
+    """Convert HTML to plain text. Malformed input returns best-effort output."""
+    extractor = _HTMLTextExtractor()
+    try:
+        extractor.feed(html)
+        extractor.close()
+    except Exception:  # noqa: BLE001
+        # Parser exceptions still leave partial output in self._parts.
+        pass
+    return extractor.get_text()
+
+
 def _decode_body(payload: Dict[str, Any]) -> str:
     """Decode the message body from a Gmail payload dict.
 
-    Handles both simple payloads (``body.data``) and multipart messages
-    by recursively searching for a ``text/plain`` part.
+    Multipart messages prefer text/plain. When only text/html is available
+    (common for marketing emails), the HTML is stripped to plain text so
+    downstream chunkers and embeddings don't ingest raw markup.
     """
     mime_type: str = payload.get("mimeType", "")
 
     if mime_type.startswith("multipart/"):
-        # Search parts for text/plain first, then any text/* fallback
         parts: List[Dict[str, Any]] = payload.get("parts", [])
+        # Prefer text/plain when both alternatives are present.
         for part in parts:
             if part.get("mimeType", "").startswith("text/plain"):
                 return _decode_body(part)
-        # Fallback: recurse into first part
+        # Fall back to text/html (which gets stripped at the leaf branch).
+        for part in parts:
+            if part.get("mimeType", "").startswith("text/html"):
+                return _decode_body(part)
+        # Last resort: recurse into the first part regardless of type.
         if parts:
             return _decode_body(parts[0])
         return ""
@@ -144,9 +211,13 @@ def _decode_body(payload: Dict[str, Any]) -> str:
     # Gmail uses URL-safe base64 without padding
     padded = body_data + "=" * (-len(body_data) % 4)
     try:
-        return base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace")
+        decoded = base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace")
     except Exception:  # noqa: BLE001
         return ""
+
+    if mime_type.startswith("text/html"):
+        return _html_to_text(decoded)
+    return decoded
 
 
 def _parse_date(date_str: str) -> datetime:
