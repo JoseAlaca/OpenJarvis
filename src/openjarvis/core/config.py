@@ -882,6 +882,32 @@ class TelemetryConfig:
 
 
 @dataclass(slots=True)
+class AnalyticsConfig:
+    """External anonymous usage analytics (PostHog).
+
+    Separate concern from :class:`TelemetryConfig`, which stores local
+    FLOPs/energy/inference metrics in SQLite. This controls anonymized
+    usage events sent to the OpenJarvis team's PostHog instance to
+    measure setup success, retention, feature usage, and churn.
+
+    No chat content, prompts, model outputs, file paths, emails, IPs,
+    or hardware identifiers are ever sent. See ``docs/telemetry.md``.
+
+    Opt out via any of:
+      - ``jarvis analytics disable``
+      - ``DO_NOT_TRACK=1`` environment variable
+      - ``[analytics] enabled = false`` in config.toml
+    """
+
+    enabled: bool = True
+    host: str = "https://us.i.posthog.com"
+    key: str = "phc_Ci2D9jdphZrzvdpRvoc4KFbKMpvqkkaaQWkxpyQizbqX"
+    anon_id_path: str = str(DEFAULT_CONFIG_DIR / "anon_id")
+    flush_interval_seconds: int = 30
+    flush_at_size: int = 100
+
+
+@dataclass(slots=True)
 class TracesConfig:
     """Trace system settings."""
 
@@ -1373,6 +1399,7 @@ class JarvisConfig:
     agent: AgentConfig = field(default_factory=AgentConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
+    analytics: AnalyticsConfig = field(default_factory=AnalyticsConfig)
     traces: TracesConfig = field(default_factory=TracesConfig)
     channel: ChannelConfig = field(default_factory=ChannelConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
@@ -1631,6 +1658,7 @@ def load_config(path: Optional[Path] = None) -> JarvisConfig:
             "agent",
             "server",
             "telemetry",
+            "analytics",
             "traces",
             "security",
             "channel",
