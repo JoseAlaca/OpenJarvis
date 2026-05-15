@@ -55,13 +55,11 @@ _DONE = object()
 
 class ResearchRequest(BaseModel):
     query: str = Field(..., description="Natural-language question to research.")
-    model: Optional[str] = Field(
-        default=None,
-        description=(
-            "Planner model tag. Defaults to the configured "
-            "DEFAULT_PLANNER_MODEL (gemma4:31b)."
-        ),
-    )
+    # Deep Research has its own model requirements (function-calling support,
+    # sufficient reasoning capability) that the chat-model selector should not
+    # override. We accept the field for forward-compat with older clients but
+    # ignore it — the planner always runs on DEFAULT_PLANNER_MODEL.
+    model: Optional[str] = Field(default=None, description="Ignored; retained for client compatibility.")
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +128,14 @@ async def _stream_research(query: str, model: str) -> AsyncGenerator[str, None]:
 
     def _run() -> None:
         try:
-            agent.run(query)
+            result = agent.run(query)
+            # Forward the aggregated token usage so the consumer can attach it
+            # to the terminal `done` frame. Internal event type — never sent to
+            # the client directly.
+            loop.call_soon_threadsafe(
+                queue.put_nowait,
+                {"type": "_usage", "usage": dict(result.usage)},
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("research agent crashed: %s", exc)
             loop.call_soon_threadsafe(
@@ -143,6 +148,7 @@ async def _stream_research(query: str, model: str) -> AsyncGenerator[str, None]:
     task = asyncio.create_task(asyncio.to_thread(_run))
 
     final_answer: Optional[str] = None
+    final_usage: Dict[str, int] = {}
     try:
         while True:
             event = await queue.get()
@@ -152,6 +158,10 @@ async def _stream_research(query: str, model: str) -> AsyncGenerator[str, None]:
                 continue
 
             etype = event.get("type")
+            # Internal usage marker — capture for the done frame, don't forward.
+            if etype == "_usage":
+                final_usage = event.get("usage", {}) or {}
+                continue
             # We translate the agent's `final_answer` event into a stream of
             # `synthesis` chunks so the client sees the answer materialize
             # incrementally rather than as a single blob.
@@ -165,7 +175,7 @@ async def _stream_research(query: str, model: str) -> AsyncGenerator[str, None]:
 
         # If the agent thread crashed before producing a final answer, the
         # client still gets the error frame (emitted above) followed by done.
-        yield _sse({"type": "done"})
+        yield _sse({"type": "done", "usage": final_usage})
     finally:
         # The worker may still be cleaning up (rarely) — make sure we don't
         # leak a dangling task.
@@ -187,9 +197,14 @@ async def research(req: ResearchRequest) -> StreamingResponse:
     terminates the stream so clients can detect end-of-response without
     parsing the underlying ``[DONE]`` sentinel used by OpenAI-style routes.
     """
-    model = req.model or DEFAULT_PLANNER_MODEL
+    if req.model and req.model != DEFAULT_PLANNER_MODEL:
+        logger.info(
+            "research: ignoring client-supplied model=%r; using DEFAULT_PLANNER_MODEL=%r",
+            req.model,
+            DEFAULT_PLANNER_MODEL,
+        )
     return StreamingResponse(
-        _stream_research(req.query, model),
+        _stream_research(req.query, DEFAULT_PLANNER_MODEL),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
