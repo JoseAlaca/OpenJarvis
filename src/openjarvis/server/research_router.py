@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from typing import Any, AsyncGenerator, Dict, Optional
 
 from fastapi import APIRouter
@@ -36,7 +37,10 @@ from openjarvis.agents.research_loop import (
 from openjarvis.connectors.embeddings import OllamaEmbedder
 from openjarvis.connectors.hybrid_search import HybridSearch
 from openjarvis.connectors.store import KnowledgeStore
+from openjarvis.core.config import DEFAULT_CONFIG_DIR
+from openjarvis.core.types import TelemetryRecord
 from openjarvis.engine.ollama import OllamaEngine
+from openjarvis.telemetry.store import TelemetryStore
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,48 @@ _WEB_CLARIFY_RESPONSE = "no clarification available in web session"
 
 # Sentinel placed on the queue when the agent thread terminates.
 _DONE = object()
+
+
+def _record_research_telemetry(
+    *,
+    model: str,
+    usage: Dict[str, int],
+    latency_seconds: float,
+) -> None:
+    """Persist a research run into the telemetry DB so /v1/savings includes it.
+
+    Failures are swallowed — telemetry persistence is best-effort and must
+    never break the user-visible SSE stream.
+    """
+    if not usage:
+        return
+    db_path = DEFAULT_CONFIG_DIR / "telemetry.db"
+    try:
+        store = TelemetryStore(db_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("research telemetry: cannot open %s: %s", db_path, exc)
+        return
+    try:
+        rec = TelemetryRecord(
+            timestamp=time.time(),
+            model_id=model,
+            engine="ollama",
+            agent="research",
+            prompt_tokens=int(usage.get("prompt_tokens", 0)),
+            prompt_tokens_evaluated=int(usage.get("prompt_tokens", 0)),
+            completion_tokens=int(usage.get("completion_tokens", 0)),
+            total_tokens=int(usage.get("total_tokens", 0)),
+            latency_seconds=latency_seconds,
+            is_streaming=True,
+        )
+        store.record(rec)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("research telemetry: failed to record: %s", exc)
+    finally:
+        try:
+            store.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -127,14 +173,23 @@ async def _stream_research(query: str, model: str) -> AsyncGenerator[str, None]:
     )
 
     def _run() -> None:
+        t0 = time.time()
         try:
             result = agent.run(query)
+            usage_dict = dict(result.usage)
+            # Persist the run's token usage to telemetry.db so /v1/savings
+            # rolls research into the same cost-comparison ledger as chat.
+            _record_research_telemetry(
+                model=model,
+                usage=usage_dict,
+                latency_seconds=time.time() - t0,
+            )
             # Forward the aggregated token usage so the consumer can attach it
             # to the terminal `done` frame. Internal event type — never sent to
             # the client directly.
             loop.call_soon_threadsafe(
                 queue.put_nowait,
-                {"type": "_usage", "usage": dict(result.usage)},
+                {"type": "_usage", "usage": usage_dict},
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("research agent crashed: %s", exc)

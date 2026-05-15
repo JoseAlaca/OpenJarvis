@@ -132,7 +132,7 @@ Strategy:
   7. Tool calls — search AND clarify — share a budget of 5 total. Spend wisely.
 
 Synthesis rules:
-  - Cite specific results by their numeric id (e.g. "[hit-3]").
+  - Cite sources as individual numbers in square brackets. Always separate — write [4] [7] [20], never [4, 7, 20]. Never format citations as markdown links. Just the number in brackets: [1]. The `ref` field on each hit is the citation number.
   - Quote sender / date / subject when relevant — the user wants attribution.
   - If the search returned nothing relevant, say so plainly. Do not invent results.
   - Only state facts that appear in the retrieved search results. Never supplement with your own knowledge or training data. If you are unsure whether a fact came from the search results, do not include it.
@@ -167,14 +167,15 @@ def shape_results_for_model(
     The first ``detailed_top`` rows keep their content snippet and trimmed
     thread context; the remainder are summarised to title + sender + date so
     the planner still sees the breadth of what's available without blowing the
-    context window. Each hit gets a stable ``id`` so the synthesis can cite it.
+    context window. Each hit gets a 1-indexed numeric ``ref`` so the synthesis
+    can cite it as ``[N]``.
     """
     out_hits: List[Dict[str, Any]] = []
     visible = hits[:total_cap]
     for i, h in enumerate(visible):
         sender = h.participants[0] if h.participants else ""
         base = {
-            "id": f"hit-{i + 1}",
+            "ref": i + 1,
             "title": h.title,
             "sender": sender,
             "timestamp": h.timestamp,
@@ -192,6 +193,77 @@ def shape_results_for_model(
         "truncated": len(hits) > total_cap,
         "hits": out_hits,
     }
+
+
+def _hit_date(timestamp: str) -> str:
+    """Pull a ``YYYY-MM-DD`` date out of a SearchHit timestamp (best effort)."""
+    if not timestamp:
+        return ""
+    try:
+        return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).date().isoformat()
+    except (ValueError, AttributeError):
+        return str(timestamp)[:10]
+
+
+def _bare_doc_id(source: str, document_id: str) -> str:
+    """Strip the connector prefix from a stored ``doc_id``.
+
+    Gmail ingest writes ``doc_id="gmail:<hex_message_id>"`` so that ids stay
+    unique across connectors. The Gmail web UI only resolves the bare hex
+    message id; passing the full prefixed form 404s and bounces the user
+    back to the inbox. Other connectors can be added here as we link out
+    to them.
+    """
+    if not document_id:
+        return ""
+    prefix = f"{source}:"
+    if source and document_id.startswith(prefix):
+        return document_id[len(prefix):]
+    return document_id
+
+
+def _hit_url(source: str, document_id: str) -> str:
+    """Build a clickable URL for a hit, when we know how to link it.
+
+    Gmail is the only source we currently link out for; everything else
+    returns an empty string and the client falls back to non-clickable
+    citation chips.
+    """
+    if source == "gmail" and document_id:
+        msg_id = _bare_doc_id(source, document_id)
+        if not msg_id:
+            return ""
+        return f"https://mail.google.com/mail/u/0/#all/{msg_id}"
+    return ""
+
+
+def build_sources_for_client(
+    hits: List[SearchHit],
+    *,
+    total_cap: int = 20,
+) -> List[Dict[str, Any]]:
+    """Produce the citation-friendly sources list streamed to the frontend.
+
+    One entry per hit, in the same order the planner sees them — so a
+    ``[N]`` citation in the synthesis maps to ``sources[N - 1]`` on the
+    client. We don't deduplicate by ``document_id``: separate chunks of the
+    same email each get their own citation slot since the planner may quote
+    different parts.
+    """
+    out: List[Dict[str, Any]] = []
+    for i, h in enumerate(hits[:total_cap]):
+        sender = h.participants[0] if h.participants else ""
+        out.append(
+            {
+                "ref": i + 1,
+                "title": h.title,
+                "sender": sender,
+                "date": _hit_date(h.timestamp),
+                "source_id": _bare_doc_id(h.source, h.document_id),
+                "url": _hit_url(h.source, h.document_id),
+            }
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +332,7 @@ class ResearchAgent:
         research router) can stream progress without rewriting the loop.
         Receives a dict in one of these shapes:
           - ``{"type": "search_call", "arguments": {...}}`` — about to call search
-          - ``{"type": "search_result", "num_hits": N, "top_titles": [...]}`` — search returned
+          - ``{"type": "search_result", "num_hits": N, "top_titles": [...], "sources": [{"ref": 1, "title": ..., "sender": ..., "date": ..., "source_id": ..., "url": ...}, ...]}`` — search returned
           - ``{"type": "clarify_call", "question": "..."}`` — about to ask for clarification
           - ``{"type": "clarify_response", "response": "..."}`` — clarification received
           - ``{"type": "final_answer", "text": "..."}`` — synthesis ready
@@ -426,7 +498,7 @@ class ResearchAgent:
                             role=Role.USER,
                             content=(
                                 "Write your final answer now based on the search "
-                                "results above. Cite specific hits by their id."
+                                "results above. Cite sources as [1], [2], etc."
                             ),
                         )
                     )
@@ -474,6 +546,7 @@ class ResearchAgent:
                             "type": "search_result",
                             "num_hits": inv.num_results,
                             "top_titles": inv.top_titles,
+                            "sources": build_sources_for_client(inv.raw_hits),
                         }
                     )
                     tool_output = json.dumps(
@@ -537,7 +610,7 @@ class ResearchAgent:
                             "You have used your tool-call budget (search + "
                             "clarify combined). Write the final synthesis now "
                             "using only the search results and clarifications "
-                            "above. Cite specific hits by id."
+                            "above. Cite sources as [1], [2], etc."
                         ),
                     )
                 )
@@ -553,7 +626,7 @@ class ResearchAgent:
                     "You've used all your search attempts. Synthesize your "
                     "findings now from whatever you've found so far. Do not "
                     "request more tool calls — write the final answer as "
-                    "plain text, citing specific hits by id where you can. "
+                    "plain text, citing sources as [1], [2], etc. where you can. "
                     "If the searches returned nothing usable, say so plainly."
                 ),
             )
@@ -593,4 +666,5 @@ __all__ = [
     "SYSTEM_PROMPT",
     "DEFAULT_PLANNER_MODEL",
     "shape_results_for_model",
+    "build_sources_for_client",
 ]
