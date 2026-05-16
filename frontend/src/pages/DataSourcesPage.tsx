@@ -663,7 +663,7 @@ function DataSourcesSection() {
                 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="font-semibold" style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text)' }}>
-                      {c.display_name}
+                      {meta?.display_name ?? c.display_name}
                     </div>
                     <SyncStatusDisplay
                       chunks={c.chunks}
@@ -767,10 +767,10 @@ function DataSourcesSection() {
                 >
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="font-semibold" style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text)' }}>
-                      {c.display_name}
+                      {meta?.display_name ?? c.display_name}
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
-                      Not connected
+                      {meta?.description ?? 'Not connected'}
                     </div>
                   </div>
                   <span style={{ color: 'var(--color-text-secondary)', fontSize: 12, fontWeight: 500 }}>

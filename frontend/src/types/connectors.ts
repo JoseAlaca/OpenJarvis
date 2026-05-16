@@ -74,32 +74,24 @@ export const SOURCE_CATALOG: ConnectorMeta[] = [
   // ── Communication ──────────────────────────────────────────────────
   {
     connector_id: 'gmail_imap',
-    display_name: 'Gmail',
+    display_name: 'Gmail (IMAP)',
     auth_type: 'oauth',
     category: 'communication',
     icon: 'Mail',
     color: 'text-red-400',
-    description: 'Email messages and threads',
+    description: 'Connect with email + app password \u2014 no Google Cloud setup',
     unitLabel: 'emails',
     steps: [
       {
-        label: 'Go to your Google Account \u2192 Security \u2192 2-Step Verification. Make sure it\'s turned ON. App Passwords only work if 2-Step Verification is enabled.',
-        url: 'https://myaccount.google.com/signinoptions/two-step-verification',
-        urlLabel: 'Open Google Security \u2192',
-      },
-      {
-        label: 'Go to App Passwords. Select app: "Mail", device: "Other" and type "OpenJarvis". Click Generate. This does NOT open a login popup \u2014 you\'ll get a 16-character password to copy (you won\'t see it again).',
+        label: 'Make sure 2-Step Verification is enabled, then generate a 16-character App Password (Mail / Other / "OpenJarvis"). Paste it below \u2014 spaces are fine, and use the app password, not your regular Gmail password.',
         url: 'https://myaccount.google.com/apppasswords',
-        urlLabel: 'Open App Passwords \u2192',
-      },
-      {
-        label: 'Paste your Gmail address and the 16-character app password below (spaces are fine). Use the app password, NOT your regular Gmail password.',
+        urlLabel: 'How to get an app password \u2192',
       },
     ],
     troubleshooting: [
       "Don't see App Passwords? Make sure 2-Step Verification is enabled first.",
       "Google Workspace user? Your admin may need to enable App Passwords for your organization.",
-      "Want OAuth instead? Use the Google Drive connector \u2014 it covers Gmail content too.",
+      "Prefer OAuth? Use the regular Gmail connector instead.",
     ],
     inputFields: [
       { name: 'email', placeholder: 'you@gmail.com', type: 'text' },
