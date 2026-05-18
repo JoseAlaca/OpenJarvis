@@ -46,6 +46,11 @@ def _run_research(
     Lazy imports keep the cost of this branch off the cold-path of plain
     ``jarvis ask`` calls.
     """
+    import re
+
+    from rich.markdown import Markdown
+    from rich.theme import Theme
+
     from openjarvis.agents.research_loop import DEFAULT_PLANNER_MODEL, ResearchAgent
     from openjarvis.connectors.embeddings import OllamaEmbedder
     from openjarvis.connectors.hybrid_search import HybridSearch
@@ -60,13 +65,10 @@ def _run_research(
     # Research mode is wired specifically to Ollama: the planner prompt
     # (gemma4:31b) and the function-call schema for search/clarify both
     # assume Ollama's /api/chat tool semantics. Using the engine returned
-    # by get_engine() here is a foot-gun — engine discovery can pick
-    # LemonadeEngine (or any other OpenAI-compatible engine registered on
-    # the same port as our own API server), route the planner through a
-    # chat endpoint that strips the tools spec, and end up with a model
-    # that "responds without searching" plus fabricated citations.
-    # research_router.py hardcodes OllamaEngine() for the same reason;
-    # mirror that here so the CLI and HTTP paths behave identically.
+    # by get_engine() here is a foot-gun — discovery can pick any
+    # OpenAI-compatible engine registered on the same port as our own
+    # API server. research_router.py hardcodes OllamaEngine() for the
+    # same reason; mirror that here so CLI and HTTP behave identically.
     engine = OllamaEngine()
 
     chunk_count = store._conn.execute(
@@ -92,13 +94,77 @@ def _run_research(
 
     planner_model = model_name or DEFAULT_PLANNER_MODEL
     logger.debug("research: planner_model=%s", planner_model)
+
+    # ---- Output styling --------------------------------------------------
+    # Two consoles by design: traces and the timing footer go to stderr
+    # (so ``jarvis ask --research "..." > out.md`` still gives a clean
+    # markdown file), while the rendered synthesis goes to stdout. The
+    # ``markdown.code`` theme override is the cyan-citation hack — see
+    # ``_style_citations`` below.
+    trace = Console(stderr=True, soft_wrap=True, highlight=False)
+    answer_console = Console(
+        theme=Theme({"markdown.code": "cyan bold not italic"}),
+        soft_wrap=True,
+        highlight=False,
+    )
+
+    def _style_citations(text: str) -> str:
+        """Wrap each ``[N]`` in inline code so it renders cyan.
+
+        Rich's Markdown class doesn't expose any hook for styling
+        arbitrary text spans, so we cheat: convert the citation tokens
+        into inline-code markdown (`[1]` → `` `[1]` ``) and override
+        the ``markdown.code`` theme entry above to colour them. Trims
+        the implicit monospace background that some terminal themes
+        give inline code so the result reads as text, not as code.
+        """
+        return re.sub(r"(\[\d+\])", r"`\1`", text)
+
+    def _format_search_call(args: dict) -> str:
+        q = args.get("query", "") or ""
+        extras: list[str] = []
+        person = args.get("person")
+        if person:
+            extras.append(f"person: {person}")
+        time_range = args.get("time_range")
+        if isinstance(time_range, dict):
+            start = time_range.get("start") or ""
+            end = time_range.get("end") or ""
+            if start or end:
+                bounds = f"{start or '…'} → {end or '…'}"
+                extras.append(f"when: {bounds}")
+        suffix = f" ({', '.join(extras)})" if extras else ""
+        return f"'{q}'{suffix}"
+
+    def on_event(event: dict) -> None:
+        etype = event.get("type")
+        if etype == "search_call":
+            trace.print(
+                f"  [dim]↳ Searching:[/dim] "
+                f"[dim italic]{_format_search_call(event.get('arguments', {}))}[/dim italic]"
+            )
+        elif etype == "search_result":
+            n = event.get("num_hits", 0)
+            label = "result" if n == 1 else "results"
+            trace.print(f"  [dim]↳ Found {n} {label}[/dim]")
+        elif etype == "clarify_call":
+            q = event.get("question", "") or ""
+            trace.print(
+                f"  [dim]↳ Clarifying:[/dim] [dim italic]{q}[/dim italic]"
+            )
+        # final_answer and clarify_response are handled outside the loop.
+
     agent = ResearchAgent(
         engine=engine,
         search=HybridSearch(store, embedder),
         model=planner_model,
+        on_event=on_event,
     )
 
+    started = time.monotonic()
     result = agent.run(query_text)
+    elapsed = time.monotonic() - started
+
     logger.debug(
         "research: iterations=%d tool_calls=%d usage=%s",
         result.iterations,
@@ -127,14 +193,23 @@ def _run_research(
         )
         return
 
-    # Trace summary to stderr so the answer on stdout is pipeable.
-    for i, inv in enumerate(result.tool_calls, start=1):
-        console.print(
-            f"[dim]search #{i}: query={inv.arguments.get('query')!r} "
-            f"person={inv.arguments.get('person')} "
-            f"→ {inv.num_results} hits[/dim]"
+    # Visual break between live traces and the synthesis.
+    trace.print()
+
+    # Render the synthesis as Markdown with inline citations coloured cyan.
+    answer_console.print(Markdown(_style_citations(result.answer)))
+
+    # Footer: how long it took + how many distinct sources the model
+    # actually cited. Empty answers (rare; only if the model went silent)
+    # skip the footer entirely.
+    if result.answer:
+        cited = {int(n) for n in re.findall(r"\[(\d+)\]", result.answer)}
+        src_word = "source" if len(cited) == 1 else "sources"
+        trace.print()
+        trace.print(
+            f"[dim]Deep Research · {elapsed:.1f}s · "
+            f"{len(cited)} {src_word} cited[/dim]"
         )
-    click.echo(result.answer)
 
 
 def _get_memory_backend(config):
