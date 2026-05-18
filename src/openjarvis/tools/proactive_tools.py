@@ -466,9 +466,9 @@ def _exec_calendar_decline(payload: Dict[str, Any]) -> Tuple[bool, str]:
     if not event_id:
         return False, "Missing event_id in payload"
     try:
-        from openjarvis.connectors.gcalendar import GoogleCalendarConnector
+        from openjarvis.connectors.gcalendar import GCalendarConnector
 
-        conn = GoogleCalendarConnector()
+        conn = GCalendarConnector()
         conn.decline_event(event_id, calendar_id=calendar_id)
         return True, f"Declined calendar event {event_id}"
     except Exception as exc:
@@ -481,9 +481,9 @@ def _exec_calendar_accept(payload: Dict[str, Any]) -> Tuple[bool, str]:
     if not event_id:
         return False, "Missing event_id in payload"
     try:
-        from openjarvis.connectors.gcalendar import GoogleCalendarConnector
+        from openjarvis.connectors.gcalendar import GCalendarConnector
 
-        conn = GoogleCalendarConnector()
+        conn = GCalendarConnector()
         conn.accept_event(event_id, calendar_id=calendar_id)
         return True, f"Accepted calendar event {event_id}"
     except Exception as exc:
