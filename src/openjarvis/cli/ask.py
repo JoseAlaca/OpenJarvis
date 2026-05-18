@@ -139,9 +139,10 @@ def _run_research(
     def on_event(event: dict) -> None:
         etype = event.get("type")
         if etype == "search_call":
+            args = event.get("arguments", {})
             trace.print(
                 f"  [dim]↳ Searching:[/dim] "
-                f"[dim italic]{_format_search_call(event.get('arguments', {}))}[/dim italic]"
+                f"[dim italic]{_format_search_call(args)}[/dim italic]"
             )
         elif etype == "search_result":
             n = event.get("num_hits", 0)
@@ -561,7 +562,10 @@ def _print_profile(
     "--knowledge-db",
     "knowledge_db",
     default=None,
-    help="Override the KnowledgeStore path used by --research (default: ~/.openjarvis/knowledge.db).",
+    help=(
+        "Override the KnowledgeStore path used by --research "
+        "(default: ~/.openjarvis/knowledge.db)."
+    ),
 )
 def ask(
     query: tuple[str, ...],

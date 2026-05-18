@@ -240,7 +240,9 @@ class ResearchRequest(BaseModel):
     # sufficient reasoning capability) that the chat-model selector should not
     # override. We accept the field for forward-compat with older clients but
     # ignore it — the planner always runs on DEFAULT_PLANNER_MODEL.
-    model: Optional[str] = Field(default=None, description="Ignored; retained for client compatibility.")
+    model: Optional[str] = Field(
+        default=None, description="Ignored; retained for client compatibility."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +307,9 @@ async def _stream_research(query: str, model: str) -> AsyncGenerator[str, None]:
         store = KnowledgeStore()
         embedder = OllamaEmbedder()
         if not embedder.is_available():
-            logger.warning("research: Ollama embedder unavailable; BM25-only retrieval.")
+            logger.warning(
+                "research: Ollama embedder unavailable; BM25-only retrieval."
+            )
             embedder = None
 
         engine = OllamaEngine()
@@ -456,7 +460,7 @@ async def research(req: ResearchRequest) -> StreamingResponse:
     """
     if req.model and req.model != DEFAULT_PLANNER_MODEL:
         logger.info(
-            "research: ignoring client-supplied model=%r; using DEFAULT_PLANNER_MODEL=%r",
+            "research: ignoring client model=%r; using DEFAULT_PLANNER_MODEL=%r",
             req.model,
             DEFAULT_PLANNER_MODEL,
         )

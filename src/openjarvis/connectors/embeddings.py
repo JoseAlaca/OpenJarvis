@@ -105,7 +105,9 @@ class OllamaEmbedder:
 
         vec = payload.get("embedding")
         if not vec:
-            logger.warning("OllamaEmbedder.embed: empty embedding for %d chars", len(text))
+            logger.warning(
+                "OllamaEmbedder.embed: empty embedding for %d chars", len(text)
+            )
             return None
 
         arr = np.asarray(vec, dtype=np.float32)
@@ -133,7 +135,9 @@ class OllamaEmbedder:
 # ---------------------------------------------------------------------------
 
 
-def decode_embedding(blob: Optional[bytes], *, dtype: type = np.float32) -> Optional[np.ndarray]:
+def decode_embedding(
+    blob: Optional[bytes], *, dtype: type = np.float32
+) -> Optional[np.ndarray]:
     """Reconstruct a 1-D vector from a BLOB written by ``OllamaEmbedder.embed``.
 
     Returns ``None`` when the input is missing or zero-length so callers can
@@ -144,4 +148,9 @@ def decode_embedding(blob: Optional[bytes], *, dtype: type = np.float32) -> Opti
     return np.frombuffer(blob, dtype=dtype)
 
 
-__all__ = ["OllamaEmbedder", "decode_embedding", "DEFAULT_EMBED_MODEL", "DEFAULT_OLLAMA_HOST"]
+__all__ = [
+    "OllamaEmbedder",
+    "decode_embedding",
+    "DEFAULT_EMBED_MODEL",
+    "DEFAULT_OLLAMA_HOST",
+]

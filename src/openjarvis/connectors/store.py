@@ -248,7 +248,9 @@ class KnowledgeStore(MemoryBackend):
         ts_str = _to_iso(timestamp)
         participants_json = json.dumps(participants or [])
         participants_raw_json = json.dumps(participants_raw or [])
-        last_synced_epoch = _to_epoch(last_synced) if last_synced is not None else time.time()
+        last_synced_epoch = (
+            _to_epoch(last_synced) if last_synced is not None else time.time()
+        )
 
         # Merge provenance fields into metadata for easy access in results
         combined_meta: Dict[str, Any] = dict(metadata or {})

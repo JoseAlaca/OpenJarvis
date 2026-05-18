@@ -13,11 +13,17 @@ import logging
 import re
 from datetime import datetime
 from html.parser import HTMLParser
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import httpx
 
 from openjarvis.connectors._stubs import BaseConnector, Document, SyncStatus
+from openjarvis.connectors.google_auth import (
+    GoogleAuthError,
+)
+from openjarvis.connectors.google_auth import (
+    call_with_refresh as _call_with_refresh,
+)
 from openjarvis.connectors.oauth import (
     GOOGLE_ALL_SCOPES,
     build_google_auth_url,
@@ -26,11 +32,11 @@ from openjarvis.connectors.oauth import (
     resolve_google_credentials,
     save_tokens,
 )
-
-logger = logging.getLogger(__name__)
 from openjarvis.core.config import DEFAULT_CONFIG_DIR
 from openjarvis.core.registry import ConnectorRegistry
 from openjarvis.tools._stubs import ToolSpec
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -40,22 +46,10 @@ _GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 _GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 _DEFAULT_CREDENTIALS_PATH = str(DEFAULT_CONFIG_DIR / "connectors" / "gmail.json")
 
-# ---------------------------------------------------------------------------
-# Token refresh — delegated to the shared google_auth helper so Calendar,
-# Contacts, Drive, and Tasks get the same one-shot 401 retry. The module-
-# level aliases below preserve the historical names for tests that import
-# ``gmail._call_with_refresh`` / ``gmail._refresh_access_token`` /
-# ``gmail.GmailAuthError``.
-# ---------------------------------------------------------------------------
-
-from openjarvis.connectors.google_auth import (  # noqa: E402
-    GoogleAuthError,
-    call_with_refresh as _call_with_refresh,
-    current_access_token as _current_access_token,
-    refresh_access_token as _refresh_access_token,
-)
-
-# Back-compat alias: external callers and tests reference GmailAuthError.
+# Token refresh is delegated to the shared google_auth helper so Calendar,
+# Contacts, Drive, and Tasks get the same one-shot 401 retry. ``GmailAuthError``
+# is preserved as a module-level alias for tests/callers that imported it
+# under the historical name.
 GmailAuthError = GoogleAuthError
 
 

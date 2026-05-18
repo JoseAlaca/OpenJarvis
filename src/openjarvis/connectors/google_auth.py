@@ -86,7 +86,9 @@ def refresh_access_token(credentials_path: str) -> str:
     if "expires_in" in payload:
         tokens["expires_in"] = payload["expires_in"]
     save_tokens(credentials_path, tokens)
-    logger.info("Refreshed Google access token (expires_in=%s)", payload.get("expires_in"))
+    logger.info(
+        "Refreshed Google access token (expires_in=%s)", payload.get("expires_in")
+    )
     return new_token
 
 

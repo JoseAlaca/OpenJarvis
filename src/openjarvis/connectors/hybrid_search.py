@@ -318,7 +318,9 @@ class HybridSearch:
                 fused += self._bm25_weight / (self._rrf_k + bm25_rank[cid])
             if cid in vec_rank:
                 fused += self._vector_weight / (self._rrf_k + vec_rank[cid])
-            out.append((cid, fused, bm25_scores.get(cid, 0.0), vec_scores.get(cid, 0.0)))
+            out.append(
+                (cid, fused, bm25_scores.get(cid, 0.0), vec_scores.get(cid, 0.0))
+            )
         out.sort(key=lambda r: -r[1])
         return out
 
@@ -326,7 +328,9 @@ class HybridSearch:
     # Thread enrichment
     # ------------------------------------------------------------------
 
-    def _thread_context(self, thread_id: str, anchor_chunk_id: str) -> List[Dict[str, Any]]:
+    def _thread_context(
+        self, thread_id: str, anchor_chunk_id: str
+    ) -> List[Dict[str, Any]]:
         """Fetch sibling chunks for ``thread_id`` (capped at ``thread_context_cap``).
 
         When the thread is longer than the cap, return a centred window around

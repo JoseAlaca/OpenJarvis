@@ -566,7 +566,9 @@ def test_sync_prefers_text_plain_over_text_html(
 class _FakeResponse:
     """Minimal stand-in for httpx.Response used by the refresh test."""
 
-    def __init__(self, *, status_code: int, json_data: dict | None = None, text: str = ""):
+    def __init__(
+        self, *, status_code: int, json_data: dict | None = None, text: str = ""
+    ):
         self.status_code = status_code
         self._json = json_data or {}
         self.text = text
@@ -657,8 +659,9 @@ def test_401_triggers_refresh_and_retries_with_new_token(tmp_path: Path) -> None
 
 def test_non_401_status_is_not_refreshed(tmp_path: Path) -> None:
     """A 500 from Gmail must propagate — only 401 should trigger refresh."""
-    from openjarvis.connectors import gmail as gmail_mod
     import httpx as _httpx
+
+    from openjarvis.connectors import gmail as gmail_mod
 
     creds_path = _write_full_creds(tmp_path)
 
@@ -722,7 +725,10 @@ def test_sync_recovers_when_list_returns_401(tmp_path: Path) -> None:
                             {"name": "From", "value": "alice@example.com"},
                             {"name": "To", "value": "me@example.com"},
                             {"name": "Subject", "value": "Hi"},
-                            {"name": "Date", "value": "Mon, 01 Jan 2024 10:00:00 +0000"},
+                            {
+                                "name": "Date",
+                                "value": "Mon, 01 Jan 2024 10:00:00 +0000",
+                            },
                         ],
                         "body": {"data": "SGVsbG8="},
                     },

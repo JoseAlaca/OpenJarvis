@@ -259,7 +259,9 @@ class IngestionPipeline:
                         # a parent doc_id for dedup and blob linkage.
                         att_source_id = f"{source_id}#{att.filename}"
                         for chunk in att_chunks:
-                            embedding_bytes, embedding_version = self._embed_chunk(chunk.content)
+                            embedding_bytes, embedding_version = self._embed_chunk(
+                                chunk.content
+                            )
                             self._store.store(
                                 content=chunk.content,
                                 source=doc.source,

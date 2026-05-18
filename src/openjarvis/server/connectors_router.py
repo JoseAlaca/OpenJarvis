@@ -148,7 +148,7 @@ def create_connectors_router():
         return raw
 
     def _start_sync(connector_id: str, instance: Any) -> str:
-        """Spawn a background sync thread; return ``"started"`` or ``"already_syncing"``.
+        """Spawn a background sync; returns ``"started"`` or ``"already_syncing"``.
 
         Records baseline items in ``_sync_state`` so GET /{id}/sync polls
         can compute "new this run" deltas, and translates exceptions into

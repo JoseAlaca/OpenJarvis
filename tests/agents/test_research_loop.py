@@ -41,7 +41,11 @@ class _MockEngine:
     ) -> Dict[str, Any]:
         self.calls.append({"tools": tools, "messages": list(messages)})
         if self._responses:
-            return self._responses.pop(0) if len(self._responses) > 1 else self._responses[0]
+            return (
+                self._responses.pop(0)
+                if len(self._responses) > 1
+                else self._responses[0]
+            )
         return {"content": "", "tool_calls": [], "usage": {}}
 
 

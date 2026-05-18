@@ -453,7 +453,9 @@ def test_pipeline_skips_embedding_when_no_embedder(
     pipeline: IngestionPipeline, store: KnowledgeStore,
 ) -> None:
     """Default pipeline leaves embedding NULL and embedding_model_version empty."""
-    pipeline.ingest([_make_doc(doc_id="doc:emb:none", content="No embedder configured.")])
+    pipeline.ingest(
+        [_make_doc(doc_id="doc:emb:none", content="No embedder configured.")]
+    )
 
     rows = store._conn.execute(
         "SELECT embedding, embedding_model_version FROM knowledge_chunks"
