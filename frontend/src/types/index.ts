@@ -100,7 +100,20 @@ export type ResearchEvent =
       sources?: ResearchSource[];
     }
   | { type: 'synthesis'; text: string }
-  | { type: 'done'; usage?: TokenUsage };
+  | {
+      type: 'system_metrics';
+      power_w: number;
+      energy_j: number;
+      duration_s: number;
+    }
+  | { type: 'done'; usage?: TokenUsage }
+  | { type: 'error'; message: string };
+
+export interface LiveEnergyMetrics {
+  power_w: number;
+  energy_j: number;
+  duration_s: number;
+}
 
 export interface ChatMessage {
   id: string;

@@ -295,6 +295,14 @@ export function InputArea() {
               );
               lastFlush = now;
             }
+          } else if (ev.type === 'system_metrics') {
+            // Live GPU sample — feed straight to the System panel so Power
+            // (W) and Energy (kJ) tick up in real time as the agent runs.
+            useAppStore.getState().setLiveEnergy({
+              power_w: ev.power_w,
+              energy_j: ev.energy_j,
+              duration_s: ev.duration_s,
+            });
           } else if (ev.type === 'done') {
             if (ev.usage) {
               usage = {
@@ -311,6 +319,12 @@ export function InputArea() {
               // research telemetry server-side.
               useAppStore.getState().incrementSavings(usage);
             }
+            // Hold the final live numbers visible for a beat so the panel
+            // doesn't flash to 0 between the SSE close and the next
+            // /v1/telemetry/energy poll picking up the persisted record.
+            window.setTimeout(() => {
+              useAppStore.getState().setLiveEnergy(null);
+            }, 1500);
             break;
           }
         }
@@ -405,6 +419,9 @@ export function InputArea() {
           message: `Stream error: ${errMsg}`,
         });
       }
+      // If we tore out mid-research, make sure the live System panel
+      // numbers don't get stuck on the last sample.
+      useAppStore.getState().setLiveEnergy(null);
     } finally {
       if (!accumulatedContent) {
         accumulatedContent = 'No response was generated. Please try again.';

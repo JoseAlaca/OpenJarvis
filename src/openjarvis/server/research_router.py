@@ -23,8 +23,9 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
-from typing import Any, AsyncGenerator, Dict, Optional
+from typing import Any, AsyncGenerator, Callable, Dict, Optional
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -57,8 +58,18 @@ def _record_research_telemetry(
     model: str,
     usage: Dict[str, int],
     latency_seconds: float,
+    energy_joules: float = 0.0,
+    mean_power_watts: float = 0.0,
+    peak_power_watts: float = 0.0,
+    energy_method: str = "",
 ) -> None:
     """Persist a research run into the telemetry DB so /v1/savings includes it.
+
+    GPU energy/power are sampled by ``_LiveGPUSampler`` during ``agent.run()``
+    and passed through here. With these fields populated, the same
+    ``/v1/telemetry/energy`` aggregation that powers the chat System panel
+    rolls research into the same numbers — Power (W) and Energy (kJ) stop
+    reading 0.0 after a research-only session.
 
     Failures are swallowed — telemetry persistence is best-effort and must
     never break the user-visible SSE stream.
@@ -82,7 +93,13 @@ def _record_research_telemetry(
             completion_tokens=int(usage.get("completion_tokens", 0)),
             total_tokens=int(usage.get("total_tokens", 0)),
             latency_seconds=latency_seconds,
+            energy_joules=energy_joules,
+            gpu_energy_joules=energy_joules,
+            power_watts=mean_power_watts,
+            energy_method=energy_method,
+            energy_vendor="nvidia" if energy_method else "",
             is_streaming=True,
+            metadata={"peak_power_w": peak_power_watts} if peak_power_watts else {},
         )
         store.record(rec)
     except Exception as exc:  # noqa: BLE001
@@ -92,6 +109,124 @@ def _record_research_telemetry(
             store.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+# ---------------------------------------------------------------------------
+# Live GPU sampler — streams power/energy events during agent.run()
+# ---------------------------------------------------------------------------
+
+
+class _LiveGPUSampler:
+    """Background pynvml poller — emits live power and accumulated energy.
+
+    Runs a small daemon thread for the lifetime of a research query.  Every
+    ``interval_s`` seconds it samples instantaneous GPU power across all
+    visible devices, rectangle-integrates it into a running energy total, and
+    invokes ``on_sample`` so the SSE consumer can forward ``system_metrics``
+    frames to the browser in real time.
+
+    On systems without pynvml (or with no visible GPU), ``available`` is
+    False and ``start()`` / ``stop()`` are no-ops — research still runs, the
+    System panel just won't see live metrics for that session.
+    """
+
+    def __init__(
+        self,
+        on_sample: Callable[[float, float, float], None],
+        interval_s: float = 0.75,
+    ) -> None:
+        self._on_sample = on_sample
+        self._interval_s = interval_s
+        self._handles: list = []
+        self._pynvml = None
+        self._available = False
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._energy_j = 0.0
+        self._peak_w = 0.0
+        self._power_sum = 0.0
+        self._sample_count = 0
+        self._t_start = 0.0
+        self._t_last = 0.0
+        try:
+            import pynvml  # type: ignore
+
+            pynvml.nvmlInit()
+            count = pynvml.nvmlDeviceGetCount()
+            self._handles = [
+                pynvml.nvmlDeviceGetHandleByIndex(i) for i in range(count)
+            ]
+            self._pynvml = pynvml
+            self._available = bool(self._handles)
+            if not self._available:
+                pynvml.nvmlShutdown()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("research: pynvml unavailable, no live GPU metrics: %s", exc)
+            self._available = False
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    def _poll_power_w(self) -> float:
+        total = 0.0
+        for h in self._handles:
+            try:
+                total += self._pynvml.nvmlDeviceGetPowerUsage(h) / 1000.0
+            except Exception:  # noqa: BLE001
+                pass
+        return total
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            now = time.monotonic()
+            p = self._poll_power_w()
+            dt = now - self._t_last
+            # Rectangle integration is fine at sub-second cadence; the chat
+            # path uses the same approach in NvidiaEnergyMonitor's fallback.
+            self._energy_j += p * dt
+            self._t_last = now
+            self._sample_count += 1
+            self._power_sum += p
+            if p > self._peak_w:
+                self._peak_w = p
+            try:
+                self._on_sample(p, self._energy_j, now - self._t_start)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("research: on_sample callback raised: %s", exc)
+            self._stop.wait(self._interval_s)
+
+    def start(self) -> None:
+        if not self._available:
+            return
+        self._t_start = time.monotonic()
+        self._t_last = self._t_start
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> Dict[str, float]:
+        if not self._available:
+            return {
+                "energy_j": 0.0,
+                "mean_power_w": 0.0,
+                "peak_power_w": 0.0,
+                "duration_s": 0.0,
+            }
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        duration = time.monotonic() - self._t_start
+        mean = self._power_sum / self._sample_count if self._sample_count else 0.0
+        try:
+            self._pynvml.nvmlShutdown()
+        except Exception:  # noqa: BLE001
+            pass
+        return {
+            "energy_j": self._energy_j,
+            "mean_power_w": mean,
+            "peak_power_w": self._peak_w,
+            "duration_s": duration,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -192,17 +327,41 @@ async def _stream_research(query: str, model: str) -> AsyncGenerator[str, None]:
         yield _sse({"type": "done", "usage": {}})
         return
 
+    def _emit_live_sample(power_w: float, energy_j: float, duration_s: float) -> None:
+        # Called from the sampler's worker thread — bounce onto the asyncio
+        # loop so the SSE consumer sees the same queue ordering as agent
+        # events. The frontend mirrors these into the System panel so Power
+        # (W) and Energy (kJ) update live during the run.
+        loop.call_soon_threadsafe(
+            queue.put_nowait,
+            {
+                "type": "system_metrics",
+                "power_w": round(power_w, 2),
+                "energy_j": round(energy_j, 2),
+                "duration_s": round(duration_s, 2),
+            },
+        )
+
+    sampler = _LiveGPUSampler(on_sample=_emit_live_sample)
+
     def _run() -> None:
         t0 = time.time()
+        sampler.start()
         try:
             result = agent.run(query)
             usage_dict = dict(result.usage)
-            # Persist the run's token usage to telemetry.db so /v1/savings
-            # rolls research into the same cost-comparison ledger as chat.
+            totals = sampler.stop()
+            # Persist token usage *and* GPU energy/power so /v1/telemetry/energy
+            # rolls research into the same Power/Energy numbers as chat —
+            # this is what the launch-video System panel reads.
             _record_research_telemetry(
                 model=model,
                 usage=usage_dict,
                 latency_seconds=time.time() - t0,
+                energy_joules=totals["energy_j"],
+                mean_power_watts=totals["mean_power_w"],
+                peak_power_watts=totals["peak_power_w"],
+                energy_method="polling" if sampler.available else "",
             )
             # Forward the aggregated token usage so the consumer can attach it
             # to the terminal `done` frame. Internal event type — never sent to
@@ -213,6 +372,12 @@ async def _stream_research(query: str, model: str) -> AsyncGenerator[str, None]:
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("research agent crashed: %s", exc)
+            # Stop the sampler on failure too so we don't leak the polling thread
+            # past the request lifetime.
+            try:
+                sampler.stop()
+            except Exception:  # noqa: BLE001
+                pass
             loop.call_soon_threadsafe(
                 queue.put_nowait,
                 {"type": "error", "message": f"{type(exc).__name__}: {exc}"},

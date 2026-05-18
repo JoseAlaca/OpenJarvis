@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type {
   Conversation,
   ChatMessage,
+  LiveEnergyMetrics,
   LogEntry,
   ModelInfo,
   MessageTelemetry,
@@ -177,6 +178,12 @@ interface AppState {
   setServerInfo: (info: ServerInfo | null) => void;
   setSavings: (data: SavingsData | null) => void;
   incrementSavings: (usage: TokenUsage) => void;
+
+  // Live GPU metrics — streamed from /api/research system_metrics events.
+  // When non-null, the System panel renders this instead of polled values
+  // so Power (W) and Energy (kJ) update in real time during a research run.
+  liveEnergy: LiveEnergyMetrics | null;
+  setLiveEnergy: (data: LiveEnergyMetrics | null) => void;
 
   // Actions: settings
   updateSettings: (partial: Partial<Settings>) => void;
@@ -447,6 +454,9 @@ export const useAppStore = create<AppState>((set, get) => {
         },
       });
     },
+
+    liveEnergy: null,
+    setLiveEnergy: (data: LiveEnergyMetrics | null) => set({ liveEnergy: data }),
 
     cachedConnectors: null,
     setCachedConnectors: (list) => set({ cachedConnectors: list }),
