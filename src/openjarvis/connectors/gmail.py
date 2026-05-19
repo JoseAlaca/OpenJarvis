@@ -289,11 +289,14 @@ class GmailConnector(BaseConnector):
         if not token:
             return
 
-        query = "category:primary"
+        # Use `in:inbox` instead of `category:primary` so the sync works for
+        # accounts that don't have Gmail's tabbed-inbox categories enabled
+        # (which would otherwise silently match zero messages).
+        query = "in:inbox"
         if since is not None:
             # Gmail's after: operator accepts Unix epoch seconds.
             epoch = int(since.timestamp())
-            query = f"category:primary after:{epoch}"
+            query = f"in:inbox after:{epoch}"
         if query_extra:
             query = f"{query} {query_extra}"
 
